@@ -134,7 +134,8 @@ async def enrich_record(rec: dict[str, Any], *, cfg: dict[str, Any], client: Cha
     # Stage B — composition
     draft = None
     if budget.can_call():
-        examples = few.select(rec, int(cfg["compose"]["few_shot"]))
+        examples = few.select(rec, int(cfg["compose"]["few_shot"]),
+                             int(cfg["compose"].get("few_shot_weak") or 0) or None)
         draft = await client.json_chat(
             tag="enriched_product", system=prompts.COMPOSE_SYSTEM,
             user=prompts.compose_user(rec, facts, evidence, examples,
@@ -265,6 +266,23 @@ async def run(cfg: dict[str, Any], *, use_llm: bool, limit: int | None, wait_ser
     return report
 
 
+def rebuild(cfg: dict[str, Any], records_path: str, out_path: str) -> int:
+    """Re-run the post-processing on saved model output; no model server needed."""
+    data_dir = Path(cfg["data_dir"])
+    records = io.load_records(data_dir / cfg["input_file"])
+    saved = {}
+    with open(records_path, encoding="utf-8") as fh:
+        for line in fh:
+            row = json.loads(line)
+            saved[str(row.pop("article_id"))] = row
+    results = {r["record_id"]: assemble.finalise(r, saved.get(r["record_id"]) or schema.empty_record())
+               for r in records}
+    io.write_submission(out_path, records, results)
+    problems = io.check_submission(out_path, records, data_dir / "SampleSubmission.csv")
+    print(f"wrote {out_path}: " + ("OK, valid" if not problems else "\n".join(problems)))
+    return 1 if problems else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="dischem", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -280,9 +298,16 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("submission")
     c.add_argument("--config", default=None)
     c.add_argument("--set", action="append", default=[])
+    b = sub.add_parser("rebuild", help="re-apply finalise() to a saved records.jsonl and write a submission")
+    b.add_argument("records_jsonl")
+    b.add_argument("--out", default="outputs/submission_rebuilt.csv")
+    b.add_argument("--config", default=None)
+    b.add_argument("--set", action="append", default=[])
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config, args.set)
+    if args.cmd == "rebuild":
+        return rebuild(cfg, args.records_jsonl, args.out)
     if args.cmd == "run":
         report = asyncio.run(run(cfg, use_llm=not args.no_llm, limit=args.limit,
                                  wait_server=not args.no_wait))

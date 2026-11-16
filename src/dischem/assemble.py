@@ -149,10 +149,163 @@ def _name_sentence(rec: dict[str, Any], name: str) -> str:
     return f"{name}."
 
 
+# ---------------------------------------------------------------------------------------------
+# Post-processing rules (applied in finalise, so they can be re-applied to saved records).
+# ---------------------------------------------------------------------------------------------
+
+PACKAGING_TYPES = ["Bottle", "Jar", "Tube", "Box", "Pouch", "Tin", "Can", "Bag",
+                   "Blister pack", "Sachet", "Tub", "Carton"]
+_PACKAGING_LOOKUP = {p.lower(): p for p in PACKAGING_TYPES}
+
+SPEC_OTHER_ALLOWED = ["certification", "recyclable_packaging", "fragrance_type", "spf",
+                      "fabric_composition", "colour", "model", "age_range"]
+_SPEC_OTHER_ALIASES = {"certifications": "certification", "color": "colour"}
+
+_CLAIM_RE = re.compile(r"\bvegan\b|\bvegetarian\b|\b[\w]+[\s-]free\b", re.I)
+_STORAGE_KEYS = ("store", "storage", "keep", "refrigerat", "temperature", "dry", "cool",
+                 "sunlight", "reseal")
+_STORAGE_WARNING_RE = re.compile(r"out of (the )?reach|warning|caution", re.I)
+_ING_CLAIM_RE = re.compile(r"%\s*natural|natural[\s-]*(plant\s+)?origin|origin\s+ingredients|"
+                           r"free from|suitable for", re.I)
+_NON_ENGLISH_RE = re.compile(
+    r"[éèêëàâçôûùîïüöäßñœ]|\b(et|de|du|des|la|le|les|avec|pour|der|die|das|und|van|met|vir|"
+    r"en|ein|eine|mit|für)\b|\bd'", re.I)
+_META_RE = re.compile(r"photo evidence|printed text|in the source|not provided|as shown", re.I)
+
+_WEIGHT_UNITS = {
+    "g": "g", "gram": "g", "grams": "g", "gram (g)": "g", "gm": "g",
+    "kg": "kg", "kilogram": "kg", "kilograms": "kg", "kilogram (kg)": "kg", "kgs": "kg",
+    "ml": "ml", "millilitre": "ml", "milliliter": "ml", "millilitres": "ml",
+    "milliliters": "ml", "millilitre (ml)": "ml",
+}
+
+
+def _fold(text: str) -> str:
+    return _norm(parsers._fold(str(text)))
+
+
+def _spec_text(rec: dict[str, Any]) -> str:
+    return _fold(re.sub(r"<[^>]+>", " ", rec.get("Specifications", "") or ""))
+
+
+def _tokens(text: str) -> list[str]:
+    return [t for t in _fold(text).split() if t]
+
+
+def fix_shade(rec: dict[str, Any], out: dict[str, Any]) -> None:
+    """Keep a shade only if the name or spec table says it; cap at the colours the name mentions."""
+    shades = out["variant_attributes"]["shade"]
+    if not shades:
+        return
+    name_tokens = set(_tokens(rec.get("Product Name", "")) + _tokens(out["online_name"]))
+    spec = " " + _spec_text(rec) + " "
+    in_name, in_spec = [], []
+    for s in shades:
+        toks = _tokens(s)
+        if not toks:
+            continue
+        if all(t in name_tokens for t in toks):
+            in_name.append(s)
+        elif f" {' '.join(toks)} " in spec:
+            in_spec.append(s)
+    out["variant_attributes"]["shade"] = in_name or in_spec
+
+
+def fix_packaging_type(out: dict[str, Any]) -> None:
+    ps = out["product_specifications"]
+    ps["packaging_type"] = _PACKAGING_LOOKUP.get(ps["packaging_type"].strip().lower(), "")
+
+
+def fix_spec_other(out: dict[str, Any]) -> None:
+    keep, seen = [], set()
+    for o in out["product_specifications"]["other"]:
+        attr = _SPEC_OTHER_ALIASES.get(o["attribute"].lower(), o["attribute"].lower())
+        key = (attr, _norm(o["value"]))
+        if attr in SPEC_OTHER_ALLOWED and key not in seen:
+            seen.add(key)
+            keep.append({"attribute": attr, "value": o["value"]})
+    out["product_specifications"]["other"] = keep
+
+
+def fix_variant_other(out: dict[str, Any]) -> None:
+    """Claim words in variant 'other' are certifications, not variants."""
+    other, moved = [], []
+    for v in out["variant_attributes"]["other"]:
+        if len(v.split()) <= 4 and _CLAIM_RE.search(v):
+            moved.append(v)
+        else:
+            other.append(v)
+    out["variant_attributes"]["other"] = other
+    have = {_norm(o["value"]) for o in out["product_specifications"]["other"]
+            if o["attribute"] == "certification"}
+    for v in moved:
+        if _norm(v) not in have:
+            have.add(_norm(v))
+            out["product_specifications"]["other"].append({"attribute": "certification", "value": v})
+
+
+def fix_storage(out: dict[str, Any]) -> None:
+    out["storage_instructions"] = [
+        s for s in out["storage_instructions"]
+        if any(k in s.lower() for k in _STORAGE_KEYS) and not _STORAGE_WARNING_RE.search(s)]
+
+
+def fix_ingredients(out: dict[str, Any]) -> None:
+    out["ingredient_information"] = [
+        s for s in out["ingredient_information"]
+        if not _ING_CLAIM_RE.search(s) and not _NON_ENGLISH_RE.search(s)]
+
+
+def fix_weight(out: dict[str, Any]) -> None:
+    """Standardise the unit spelling. A weight without a unit is kept: on the validation set 125 of
+    158 reference weights have an empty unit, and parsed unit-less weights were right 19 times in
+    19, so blanking them only discarded correct values."""
+    w = out["weight"]
+    unit = _WEIGHT_UNITS.get(w["unit"].strip().lower())
+    if unit:
+        w["unit"] = unit
+
+
+def strip_meta_sentences(out: dict[str, Any]) -> None:
+    for f in ("short_description", "long_description"):
+        sentences = re.split(r"(?<=[.!?])\s+", out[f])
+        out[f] = " ".join(s for s in sentences if not _META_RE.search(s)).strip()
+
+
+def fix_brand_case(rec: dict[str, Any], out: dict[str, Any]) -> None:
+    """Short acronym brands (NPL, USN, NYX, OGX) are written in capitals.
+
+    Applied to brands of up to three letters, and to four-letter brands with no vowel. Four-letter
+    brands that read as words (Dove, Nuby, Joie, Avon) keep normal case.
+    """
+    brand = (rec.get("T_BRAND") or "").strip()
+    letters = re.sub(r"[^A-Za-z]", "", brand)
+    if not brand or " " in brand or not letters.isalpha() or len(letters) > 4:
+        return
+    if len(letters) == 4 and re.search(r"[aeiou]", letters, re.I):
+        return
+    pat = re.compile(rf"(?<![\w]){re.escape(brand)}(?![\w])", re.I)
+    for f in schema.TEXT_FIELDS:
+        out[f] = pat.sub(brand.upper(), out[f])
+
+
+def postprocess(rec: dict[str, Any], out: dict[str, Any]) -> None:
+    fix_shade(rec, out)
+    fix_packaging_type(out)
+    fix_variant_other(out)           # may add certifications ...
+    fix_spec_other(out)              # ... so the allow-list runs after it
+    fix_storage(out)
+    fix_ingredients(out)
+    fix_weight(out)
+    strip_meta_sentences(out)
+
+
 def finalise(rec: dict[str, Any], out: dict[str, Any]) -> dict[str, Any]:
-    """Last step for every record: schema shape, do-not-predict blanking, text fallbacks."""
+    """Last step for every record: schema shape, post-processing, do-not-predict blanking, text fallbacks."""
     out = schema.normalise(out)
+    postprocess(rec, out)
     fallback_text(rec, out)
+    fix_brand_case(rec, out)
     if _norm(out["long_description"]) == _norm(out["short_description"]) and rec.get("Product Description"):
         sections = parsers.split_description(rec["Product Description"])
         alt = " ".join(x for x in (sections.get("body", ""), _bullets_to_sentence(sections.get("key features", ""))) if x)

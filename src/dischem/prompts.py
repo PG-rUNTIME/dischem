@@ -48,10 +48,15 @@ You are transcribing evidence for a product catalogue. Rules:
 - packaging_type: the visible container only (for example Bottle, Jar, Tube, Box, Pouch, Tin,
   Blister pack). Leave empty if the product is shown unpackaged.
 - packaging_materials: only if printed on the pack or unmistakable (for example a glass jar).
-- colours: the colour or shade of the product itself, not of the background.
+- colours: only when a colour or shade is part of the product's identity (a lipstick or nail
+  polish shade, a coloured item sold in a named colour). Leave it empty for products whose label
+  merely uses colour as design, and never list the colours of the packaging artwork or background.
 - pack_size: net quantity or count as printed, for example "250 g", "30 pcs", "6 x 25 ml".
-- claims: short factual claims printed on the pack, each as printed.
-- ingredients, directions, storage_instructions, certifications: only if printed and legible.
+- claims: short factual claims printed on the pack, each as printed ("vegan", "sugar free",
+  "98% natural origin"). A claim is not an ingredient: never put a claim in the ingredients list.
+- ingredients: only the ingredient names from a printed ingredient list. Claims, benefits and
+  marketing lines are not ingredients.
+- directions, storage_instructions, certifications: only if printed and legible.
 - nutrition_panel: transcribe the table row by row with its column headings if one is legible,
   otherwise an empty string.
 Return JSON only."""
@@ -103,19 +108,24 @@ Evidence rules — these decide the score:
 - Keep the source's qualifiers and strength ("may help" stays "may help"). Do not add safety,
   efficacy, suitability or free-from claims.
 - Ignore photo evidence marked as not matching the product.
+- Never mention photos, sources, evidence or the record in any text field. Write the descriptions
+  as customer-facing product copy, not as a report on what was or was not provided.
+- Claims ("vegan", "free from", "natural origin") are claims, not ingredients: keep them out of
+  ingredient_information.
 
 Field rules:
 - short_description: one or two sentences saying what the product is or does. No bullets. If the
   record supplies a short description, stay close to its meaning. If there is no description and
   no photo evidence, write one plain sentence from the product name and category only.
 - long_description: start with the full product name and what it is or is for, then the supported
-  details (key features, how to use). Do not open with the same sentence as the short description.
-  UK English. No invented claims.
+  details (key features, how to use). The long description must not start with the short
+  description or repeat its opening sentence. UK English. No invented claims.
 - ingredient_information: ingredient names in source order and wording, including named active or
   key ingredients and any "may contain" statement. Empty if none are stated.
 - storage_instructions: storage instructions exactly as supported by the sources.
-- variant_attributes: shade (colour or shade), flavour, fragrance, other (other variant
-  identifiers such as a range or theme name). Each is a list of strings.
+- variant_attributes: shade (only a colour or shade that is part of the product's identity and
+  appears in the name or specifications), flavour, fragrance, other (other variant identifiers
+  such as a range or theme name; not claims). Each is a list of strings.
 - product_specifications.pack_size: the sold quantity, value and unit separately, for example
   {"value": "110", "unit": "ml"}; application_area: where it is applied (Face, Hair, Body...);
   packaging_type: Bottle, Jar, Tube, Box, Pouch...; packaging_material: only if stated or
@@ -184,6 +194,17 @@ def to_llm_shape(out: dict[str, Any]) -> dict[str, Any]:
     return shaped
 
 
+NO_DESCRIPTION_RULE = (
+    "This product has no supplied description. Write short_description and long_description as at "
+    "most two plain sentences each, using only the product name, brand and category. Do not "
+    "describe usage steps, and do not use words such as ideal, perfect, safe, prevent or treat.")
+
+
+def has_description(rec: dict[str, Any]) -> bool:
+    return bool((rec.get("Short Description") or "").strip()
+                or (rec.get("Product Description") or "").strip())
+
+
 def compose_user(rec: dict[str, Any], facts: dict[str, Any], evidence: dict[str, Any] | None,
                  examples: list[dict[str, Any]], max_chars: int,
                  siblings: dict[str, str] | None = None) -> str:
@@ -191,8 +212,10 @@ def compose_user(rec: dict[str, Any], facts: dict[str, Any], evidence: dict[str,
     for i, ex in enumerate(examples, 1):
         parts.append(f"### Example {i}\n" + record_block(ex["input"], ex["facts"], None, 1200)
                      + "\nOutput: " + json.dumps(to_llm_shape(ex["output"]), ensure_ascii=False))
-    parts.append("### Product to enrich\n" + record_block(rec, facts, evidence, max_chars, siblings)
-                 + "\nOutput:")
+    block = record_block(rec, facts, evidence, max_chars, siblings)
+    if not has_description(rec):
+        block += "\n" + NO_DESCRIPTION_RULE
+    parts.append("### Product to enrich\n" + block + "\nOutput:")
     return "\n\n".join(parts)
 
 

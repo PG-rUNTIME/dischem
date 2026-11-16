@@ -79,7 +79,9 @@ class FewShot:
         self.examples = [ground_example(e) for e in examples
                          if e["input"].get("Product Description")]
 
-    def select(self, rec: dict[str, Any], k: int) -> list[dict[str, Any]]:
+    def select(self, rec: dict[str, Any], k: int, k_weak: int | None = None,
+               weak_overlap: float = 0.34) -> list[dict[str, Any]]:
+        """k examples; k_weak (if given) when even the best example is a weak category match."""
         if k <= 0 or not self.examples:
             return []
         mine = _tokens(" ".join(rec.get(c, "") for c in ("category_group", "T_DEPARTMENT", "T_CATEGORY")))
@@ -93,8 +95,13 @@ class FewShot:
             overlap = len(mine & theirs) / max(1, len(mine | theirs))
             return (int(same_group), overlap, e["record_id"])
 
-        ranked = sorted(self.examples, key=score, reverse=True)
-        return [e for e in ranked if e["input"]["record_id"] != rec["record_id"]][:k]
+        ranked = [e for e in sorted(self.examples, key=score, reverse=True)
+                  if e["input"]["record_id"] != rec["record_id"]]
+        if k_weak and ranked:
+            same_group, overlap, _ = score(ranked[0])
+            if not same_group and overlap < weak_overlap:
+                k = k_weak
+        return ranked[:k]
 
 
 _SIZE = re.compile(r"(\d+(?:[.,]\d+)?)\s?(ml|l|kg|g|mg|s)\b")

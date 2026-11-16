@@ -126,3 +126,26 @@ def test_text_fields_never_blank():
     out = assemble.finalise(rec, schema.empty_record())
     assert out["online_name"] == "Kappa Men Black EDT 60ml"
     assert "Kappa Men Black EDT 60ml" in out["short_description"] and out["long_description"]
+
+
+def test_no_description_rule_only_when_blank():
+    from dischem import prompts
+    blank = {"Product Name": "X", "Short Description": "", "Product Description": ""}
+    full = {**blank, "Product Description": "A cream."}
+    assert not prompts.has_description(blank) and prompts.has_description(full)
+    assert "no supplied description" in prompts.compose_user(blank, {}, None, [], 500)
+    assert "no supplied description" not in prompts.compose_user(full, {}, None, [], 500)
+
+
+def test_weak_match_gets_more_examples():
+    from dischem.retrieval import FewShot
+    fs = FewShot([])
+    mk = lambda i, g: {"input": {"record_id": str(i), "category_group": g, "T_DEPARTMENT": g,
+                                 "T_CATEGORY": g, "Product Description": "d"},
+                       "output": {}, "facts": {}}
+    fs.examples = [mk(i, "Beauty") for i in range(5)]
+    rec = {"record_id": "z", "category_group": "Baby", "T_DEPARTMENT": "Baby", "T_CATEGORY": "Nappies"}
+    assert len(fs.select(rec, 2)) == 2
+    assert len(fs.select(rec, 2, k_weak=3)) == 3
+    rec["category_group"] = rec["T_DEPARTMENT"] = rec["T_CATEGORY"] = "Beauty"
+    assert len(fs.select(rec, 2, k_weak=3)) == 2

@@ -29,6 +29,7 @@ images:
 compose:
   max_tokens: 1400
   few_shot: 2                          # worked examples from template.csv per prompt
+  few_shot_weak: 3                     # examples when the best category match is weak (0 = off)
   max_source_chars: 3500
 
 verify:

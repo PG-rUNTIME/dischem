@@ -88,7 +88,8 @@ class ChatClient:
         self.cache = DiskCache(cache_dir)
         self.sem = asyncio.Semaphore(int(cfg["concurrency"]))
         self.stats = {"calls": 0, "cached": 0, "retries": 0, "failed": 0,
-                      "prompt_tokens": 0, "completion_tokens": 0}
+                      "prompt_tokens": 0, "completion_tokens": 0,
+                      "failure_reasons": {}}
         self._client = httpx.AsyncClient(
             base_url=cfg["base_url"].rstrip("/"),
             headers={"Authorization": f"Bearer {cfg.get('api_key') or 'EMPTY'}"},
@@ -138,6 +139,7 @@ class ChatClient:
             return hit
 
         attempts = 1 + int(self.cfg.get("max_retries", 1))
+        reason = "unknown"
         async with self.sem:
             for attempt in range(attempts):
                 if attempt:
@@ -150,12 +152,22 @@ class ChatClient:
                     usage = data.get("usage") or {}
                     self.stats["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
                     self.stats["completion_tokens"] += int(usage.get("completion_tokens") or 0)
-                    parsed = extract_json(data["choices"][0]["message"]["content"])
+                    choice = data["choices"][0]
+                    try:
+                        parsed = extract_json(choice["message"]["content"])
+                    except ValueError:
+                        if choice.get("finish_reason") == "length":
+                            raise ValueError("truncated: hit max_tokens") from None
+                        raise
                     if validate:
                         parsed = validate(parsed)
                     self.cache.put(key, parsed)
                     return parsed
-                except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+                except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+                    reason = ("truncated" if "truncated" in str(exc)
+                              else f"{type(exc).__name__}: {str(exc)[:60]}")
                     continue
         self.stats["failed"] += 1
+        fr = self.stats["failure_reasons"]
+        fr[f"{tag} | {reason}"] = fr.get(f"{tag} | {reason}", 0) + 1
         return None

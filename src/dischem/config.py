@@ -31,7 +31,7 @@ DEFAULTS: dict[str, Any] = {
         "jpeg_quality": 90,
         "max_tokens": 700,
     },
-    "compose": {"max_tokens": 1400, "few_shot": 2, "max_source_chars": 3500},
+    "compose": {"max_tokens": 1400, "few_shot": 2, "few_shot_weak": 3, "max_source_chars": 3500},
     "verify": {"enabled": True, "max_tokens": 500},
     "siblings": {                         # optional catalogue lookup, off by default (see README)
         "enabled": False,
