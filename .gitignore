@@ -1,0 +1,14 @@
+# Challenge data must not be shared (Zindi rule: "Data Sharing: No sharing permitted").
+# Keep the repository private and never commit the data folder.
+data/
+outputs/
+cache/
+logs/
+*.zip
+
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.DS_Store

@@ -1,0 +1,46 @@
+# Default run configuration. Any value can be overridden on the command line:
+#   python -m dischem.pipeline run --config config/default.yaml --set llm.concurrency=8
+seed: 42
+
+data_dir: data                 # Test_Masked.csv, template*.csv, image_mapping.csv, ...
+images_dir: data/images        # unpacked product_images.zip (img_XXXXXX.jpg)
+output_dir: outputs
+cache_dir: cache
+input_file: Test_Masked.csv
+
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  model: Qwen/Qwen3-VL-8B-Instruct     # Apache-2.0, open weights, vision + text in one model
+  concurrency: 8                       # parallel requests; raise if the benchmark shows headroom
+  request_timeout_s: 180
+  max_retries: 1                       # challenge rule: at most one retry for a failed call
+  temperature: 0.0
+  extra_body: {}                       # for models with a thinking mode:
+                                       #   {chat_template_kwargs: {enable_thinking: false}}
+
+images:
+  enabled: true
+  max_per_record: 3
+  max_side_px: 1024                    # source photos are 1200 x 1200
+  jpeg_quality: 90
+  max_tokens: 700
+
+compose:
+  max_tokens: 1400
+  few_shot: 2                          # worked examples from template.csv per prompt
+  max_source_chars: 3500
+
+verify:
+  enabled: true                        # reviewer pass that deletes unsupported model values
+  max_tokens: 500
+
+siblings:                              # optional catalogue lookup — read the README first
+  enabled: false
+  min_siblings: 2
+  min_name_jaccard: 0.5
+  fields: [Packaging Type, Application Area, Recyclable Packaging, Certifications]
+
+budget:
+  max_runtime_minutes: 170             # hard rule is 180; the clock includes model start-up
+  reserve_minutes: 10                  # after this point no new model call is started
